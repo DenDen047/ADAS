@@ -343,13 +343,18 @@ if __name__ == "__main__":
     parser.add_argument('--max_workers', type=int, default=48)
     parser.add_argument('--debug', action='store_true', default=True)
     parser.add_argument('--save_dir', type=str, default='results/')
-    parser.add_argument('--expr_name', type=str, default="drop_gpt3.5_results")
+    parser.add_argument('--expr_name', type=str, default="drop_gpt4o_results")
     parser.add_argument('--n_generation', type=int, default=30)
     parser.add_argument('--debug_max', type=int, default=3)
     parser.add_argument('--model',
                         type=str,
-                        default='gpt-4o-2024-05-13',
-                        choices=['gpt-4-turbo-2024-04-09', 'gpt-3.5-turbo-0125', 'gpt-4o-2024-05-13'])
+                        default='gpt-4o-2024-11-20',
+                        choices=[
+                            'gpt-4-turbo-2024-04-09',
+                            'gpt-3.5-turbo-0125',
+                            'gpt-4o-2024-08-06', 'gpt-4o-2024-11-20',
+                            'gpt-4o-mini-2024-07-18'
+                        ])
 
     args = parser.parse_args()
     # search
