@@ -10,6 +10,7 @@ import backoff
 import numpy as np
 import openai
 from tqdm import tqdm
+from loguru import logger
 
 from drop_prompt import get_init_archive, get_prompt, get_reflexion_prompt
 from utils import random_id, bootstrap_confidence_interval, load_drop, drop_metric
@@ -34,36 +35,48 @@ def get_json_response_from_gpt(
         system_message,
         temperature=0.5
 ):
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_message},
-            {"role": "user", "content": msg},
-        ],
-        temperature=temperature, max_tokens=4096, stop=None, response_format={"type": "json_object"}
-    )
-    content = response.choices[0].message.content
-    json_dict = json.loads(content)
-    # cost = response.usage.completion_tokens / 1000000 * 15 + response.usage.prompt_tokens / 1000000 * 5
-    assert not json_dict is None
-    return json_dict
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": msg},
+            ],
+            temperature=temperature,
+            max_tokens=4096, stop=None,
+            response_format={"type": "json_object"}
+        )
+        content = response.choices[0].message.content
+        json_dict = json.loads(content)
+        # cost = response.usage.completion_tokens / 1000000 * 15 + response.usage.prompt_tokens / 1000000 * 5
+        assert not json_dict is None
+        return json_dict
+    except openai.RateLimitError as e:
+        logger.error(f"Rate limit error: {str(e)}")
+        raise  # Re-raise the error to trigger the backoff decorator
 
 
 @backoff.on_exception(backoff.expo, openai.RateLimitError)
 def get_json_response_from_gpt_reflect(
-        msg_list,
-        model,
-        temperature=0.8
+    msg_list,
+    model,
+    temperature=0.8
 ):
-    response = client.chat.completions.create(
-        model=model,
-        messages=msg_list,
-        temperature=temperature, max_tokens=4096, stop=None, response_format={"type": "json_object"}
-    )
-    content = response.choices[0].message.content
-    json_dict = json.loads(content)
-    assert not json_dict is None
-    return json_dict
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=msg_list,
+            temperature=temperature,
+            max_tokens=4096, stop=None,
+            response_format={"type": "json_object"}
+        )
+        content = response.choices[0].message.content
+        json_dict = json.loads(content)
+        assert not json_dict is None
+        return json_dict
+    except openai.RateLimitError as e:
+        logger.error(f"Rate limit error: {str(e)}")
+        raise  # Re-raise the error to trigger the backoff decorator
 
 
 class LLMAgentBase():
@@ -72,7 +85,7 @@ class LLMAgentBase():
     """
 
     def __init__(self, output_fields: list, agent_name: str,
-                 role='helpful assistant', model='gpt-3.5-turbo-0125', temperature=0.5) -> None:
+                 role='helpful assistant', model='gpt-4o-mini-2024-07-18', temperature=0.5) -> None:
         self.output_fields = output_fields
         self.agent_name = agent_name
 
@@ -164,8 +177,7 @@ def search(args):
         try:
             acc_list = evaluate_forward_fn(args, solution["code"])
         except Exception as e:
-            print("During evaluating initial archive:")
-            print(e)
+            logger.error(f"During evaluating initial archive: {e}")
             continue
 
         fitness_str = bootstrap_confidence_interval(acc_list)
@@ -196,8 +208,7 @@ def search(args):
             msg_list.append({"role": "user", "content": Reflexion_prompt_2})
             next_solution = get_json_response_from_gpt_reflect(msg_list, args.model)
         except Exception as e:
-            print("During LLM generate new solution:")
-            print(e)
+            logger.error(f"During LLM generate new solution: {e}")
             n -= 1
             continue
 
@@ -209,15 +220,13 @@ def search(args):
                     raise Exception("All 0 accuracy")
                 break
             except Exception as e:
-                print("During evaluation:")
-                print(e)
+                logger.error(f"During evaluation: {e}")
                 msg_list.append({"role": "assistant", "content": str(next_solution)})
                 msg_list.append({"role": "user", "content": f"Error during evaluation:\n{e}\nCarefully consider where you went wrong in your latest implementation. Using insights from previous attempts, try to debug the current code to implement the same thought. Repeat your previous thought in 'thought', and put your thinking for debugging in 'debug_thought'"})
                 try:
                     next_solution = get_json_response_from_gpt_reflect(msg_list, args.model)
                 except Exception as e:
-                    print("During LLM generate new solution:")
-                    print(e)
+                    logger.error(f"During LLM generate new solution: {e}")
                     continue
                 continue
         if not acc_list:
@@ -286,7 +295,7 @@ def evaluate_forward_fn(args, forward_str):
     func = namespace[names[0]]
     if not callable(func):
         raise AssertionError(f"{func} is not callable")
-    setattr(AgentSystem, "forward", func)
+    setattr(AgentSystem, "forward", func)   # equal to `AgentSystem.forward = func`
 
     # set seed 0 for valid set
     examples = load_drop(args.data_filename)[1:-1]  # first one and the last one is for few-shot examples
@@ -311,10 +320,10 @@ def evaluate_forward_fn(args, forward_str):
 
     agentSystem = AgentSystem()
 
-    acc_list = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         results = list(tqdm(executor.map(agentSystem.forward, task_queue), total=len(task_queue)))
 
+    acc_list = []
     for q_idx, res in enumerate(results):
         try:
             if isinstance(res, Info):
@@ -328,7 +337,7 @@ def evaluate_forward_fn(args, forward_str):
             continue
 
         acc_list.append(f1_score)
-    print(f"f1: {bootstrap_confidence_interval(acc_list)}")
+    logger.info(f"f1: {bootstrap_confidence_interval(acc_list)}")
     return acc_list
 
 
@@ -343,15 +352,13 @@ if __name__ == "__main__":
     parser.add_argument('--max_workers', type=int, default=48)
     parser.add_argument('--debug', action='store_true', default=True)
     parser.add_argument('--save_dir', type=str, default='results/')
-    parser.add_argument('--expr_name', type=str, default="drop_gpt4o_mini_results")
+    parser.add_argument('--expr_name', type=str, default="test_gpt4o_mini_results")
     parser.add_argument('--n_generation', type=int, default=30)
     parser.add_argument('--debug_max', type=int, default=3)
     parser.add_argument('--model',
                         type=str,
                         default='gpt-4o-mini-2024-07-18',
                         choices=[
-                            'gpt-4-turbo-2024-04-09',
-                            'gpt-3.5-turbo-0125',
                             'gpt-4o-2024-08-06', 'gpt-4o-2024-11-20',
                             'gpt-4o-mini-2024-07-18'
                         ])
